@@ -8,7 +8,7 @@ const app = express();
 
 // Configure CORS for Flutter web app
 app.use(cors({
-  origin: ['*'], // Update with your production domain
+  origin: ['http://localhost:63055'], // Update with your production domain
   methods: ['GET'],
   allowedHeaders: ['Authorization', 'Content-Type'],
 }));
