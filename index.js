@@ -43,6 +43,7 @@ app.get('/file-url', async (req, res) => {
   const filePath = req.query.file;
 
   if (!idToken || !filePath) {
+    console.error('Missing idToken or filePath:', { idToken: !!idToken, filePath });
     return res.status(400).json({ error: 'Missing idToken or filePath' });
   }
 
@@ -52,8 +53,8 @@ app.get('/file-url', async (req, res) => {
     console.log(`Verified token for file: ${filePath}`);
 
     // Authorize Backblaze
-    await b2.authorize();
-    console.log('Backblaze authorized');
+    const authResponse = await b2.authorize();
+    console.log('Backblaze auth response:', JSON.stringify(authResponse.data, null, 2));
 
     // Generate signed URL
     const response = await b2.getDownloadAuthorization({
@@ -62,16 +63,16 @@ app.get('/file-url', async (req, res) => {
       validDurationInSeconds: 3600, // URL valid for 1 hour
     });
 
-    console.log('Backblaze response:', JSON.stringify(response.data, null, 2));
+    console.log('Backblaze download auth response:', JSON.stringify(response.data, null, 2));
 
-    // Fallback to bucket endpoint if downloadUrl is undefined
-    const downloadUrl = response.data.downloadUrl || `https://f000.backblazeb2.com`;
+    // Fallback to account's downloadUrl or default endpoint
+    const downloadUrl = response.data.downloadUrl || authResponse.data.downloadUrl || `https://f000.backblazeb2.com`;
     const signedUrl = `${downloadUrl}/file/${process.env.BUCKET_NAME}/${filePath}?Authorization=${response.data.authorizationToken}`;
     console.log(`Generated signed URL: ${signedUrl}`);
 
     res.json({ url: signedUrl });
   } catch (err) {
-    console.error(`Error generating signed URL for ${filePath}:`, err.message);
+    console.error(`Error generating signed URL for ${filePath}:`, err.message, err);
     res.status(500).json({ error: 'Failed to generate signed URL', details: err.message });
   }
 });
