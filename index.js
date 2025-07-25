@@ -8,7 +8,7 @@ const app = express();
 
 // Configure CORS for Flutter web app
 app.use(cors({
-  origin: ['http://localhost:63055'], // Update with your production domain
+  origin: ['http://localhost:57420', 'https://your-production-domain.com'], // Update with your production domain
   methods: ['GET'],
   allowedHeaders: ['Authorization', 'Content-Type'],
 }));
@@ -27,7 +27,7 @@ try {
   console.log('Firebase initialized successfully');
 } catch (err) {
   console.error('Firebase initialization failed:', err.message);
-  console.error('Invalid JSON content:', process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+  console.error('Invalid JSON content:', process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON || 'Undefined');
   process.exit(1);
 }
 
@@ -49,9 +49,11 @@ app.get('/file-url', async (req, res) => {
   try {
     // Verify Firebase ID token
     await admin.auth().verifyIdToken(idToken);
+    console.log(`Verified token for file: ${filePath}`);
 
     // Authorize Backblaze
     await b2.authorize();
+    console.log('Backblaze authorized');
 
     // Generate signed URL
     const response = await b2.getDownloadAuthorization({
@@ -60,10 +62,16 @@ app.get('/file-url', async (req, res) => {
       validDurationInSeconds: 3600, // URL valid for 1 hour
     });
 
-    const signedUrl = `${response.data.downloadUrl}/file/${process.env.BUCKET_NAME}/${filePath}?Authorization=${response.data.authorizationToken}`;
+    console.log('Backblaze response:', JSON.stringify(response.data, null, 2));
+
+    // Fallback to bucket endpoint if downloadUrl is undefined
+    const downloadUrl = response.data.downloadUrl || `https://f000.backblazeb2.com`;
+    const signedUrl = `${downloadUrl}/file/${process.env.BUCKET_NAME}/${filePath}?Authorization=${response.data.authorizationToken}`;
+    console.log(`Generated signed URL: ${signedUrl}`);
+
     res.json({ url: signedUrl });
   } catch (err) {
-    console.error('Error generating signed URL:', err.message);
+    console.error(`Error generating signed URL for ${filePath}:`, err.message);
     res.status(500).json({ error: 'Failed to generate signed URL', details: err.message });
   }
 });
