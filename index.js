@@ -84,6 +84,9 @@ app.get('/file-url', async (req, res) => {
 });
 
 // New endpoint to handle file uploads
+// ... (previous code remains the same until the /upload endpoint) ...
+
+// New endpoint to handle file uploads
 app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), async (req, res) => {
   const idToken = req.headers.authorization?.split('Bearer ')[1];
   if (!idToken) {
@@ -131,16 +134,10 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
       data: thumbnailFile.buffer,
     });
 
-    // Generate download URLs (simplified; adjust based on your needs)
-    const downloadUrl = `https://f000.backblazeb2.com/file/${process.env.BUCKET_NAME}`;
-    const videoUrl = `${downloadUrl}/${videoPath}`;
-    const thumbnailUrl = `${downloadUrl}/${thumbnailPath}`;
-
-    console.log(`Uploaded video: ${videoUrl}, thumbnail: ${thumbnailUrl}`);
-
+    // Return relative paths instead of full URLs
     res.json({
-      videoUrl: videoUrl,
-      thumbnailUrl: thumbnailUrl,
+      videoUrl: videoPath,
+      thumbnailUrl: thumbnailPath,
     });
   } catch (err) {
     console.error('Upload error:', err.message, err);
