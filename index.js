@@ -120,17 +120,20 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
 
     // Upload video with estimated progress
     const videoTotalBytes = videoFile.size;
-    const estimatedDuration = videoTotalBytes / 1000000; // Approx 1 MB/s
+    const uploadSpeedKBps = 500; // Adjustable, e.g., 500 KB/s
+    const estimatedDurationSeconds = videoTotalBytes / (uploadSpeedKBps * 1024); // Seconds
     let videoProgress = 0;
+    res.write(JSON.stringify({ progress: 0 }) + '\n'); // Initial progress
     const videoInterval = setInterval(() => {
       if (videoProgress < 0.5) {
-        videoProgress += 0.1; // Increment by 10% up to 50%
+        videoProgress += 0.02; // 2% increments
         if (videoProgress > 0.5) videoProgress = 0.5;
         res.write(JSON.stringify({ progress: videoProgress }) + '\n');
       }
-    }, 500); // Update every 500ms
+    }, 200); // Update every 200ms
 
     const videoUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
+    await new Promise((resolve) => setTimeout(resolve, estimatedDurationSeconds * 1000)); // Simulate upload time
     await b2.uploadFile({
       uploadUrl: videoUploadResponse.data.uploadUrl,
       uploadAuthToken: videoUploadResponse.data.authorizationToken,
@@ -142,17 +145,18 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
 
     // Upload thumbnail with estimated progress
     const thumbnailTotalBytes = thumbnailFile.size;
-    const estimatedThumbnailDuration = thumbnailTotalBytes / 1000000; // Approx 1 MB/s
+    const estimatedThumbnailDurationSeconds = thumbnailTotalBytes / (uploadSpeedKBps * 1024); // Seconds
     let thumbnailProgress = 0.5;
     const thumbnailInterval = setInterval(() => {
       if (thumbnailProgress < 1.0) {
-        thumbnailProgress += 0.1; // Increment by 10% up to 100%
+        thumbnailProgress += 0.02; // 2% increments
         if (thumbnailProgress > 1.0) thumbnailProgress = 1.0;
         res.write(JSON.stringify({ progress: thumbnailProgress }) + '\n');
       }
-    }, 500); // Update every 500ms
+    }, 200); // Update every 200ms
 
     const thumbnailUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
+    await new Promise((resolve) => setTimeout(resolve, estimatedThumbnailDurationSeconds * 1000)); // Simulate upload time
     await b2.uploadFile({
       uploadUrl: thumbnailUploadResponse.data.uploadUrl,
       uploadAuthToken: thumbnailUploadResponse.data.authorizationToken,
