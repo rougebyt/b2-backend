@@ -5,7 +5,6 @@ const admin = require('firebase-admin');
 const B2 = require('backblaze-b2');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid'); // For generating UUIDs
-const stream = require('stream'); // For custom stream handling
 
 const app = express();
 
@@ -34,11 +33,17 @@ try {
   process.exit(1);
 }
 
-// Initialize Backblaze B2
-const b2 = new B2({
-  applicationKeyId: process.env.KEY_ID,
-  applicationKey: process.env.APP_KEY,
-});
+// Initialize Backblaze B2 globally to avoid per-request authorization
+let b2 = null;
+async function initializeB2() {
+  b2 = new B2({
+    applicationKeyId: process.env.KEY_ID,
+    applicationKey: process.env.APP_KEY,
+  });
+  await b2.authorize();
+  console.log('B2 initialized and authorized at', new Date().toISOString());
+}
+initializeB2().catch(err => console.error('B2 initialization failed:', err));
 
 // Configure multer for file uploads
 const storage = multer.memoryStorage(); // Store files in memory for upload
@@ -57,11 +62,12 @@ app.get('/file-url', async (req, res) => {
   try {
     // Verify Firebase ID token
     await admin.auth().verifyIdToken(idToken);
-    console.log(`Verified token for file: ${filePath}`);
+    console.log(`Verified token for file: ${filePath} at`, new Date().toISOString());
 
-    // Authorize Backblaze
+    // Authorize Backblaze (re-authorize if needed, but should be cached)
+    if (!b2) await initializeB2();
     const authResponse = await b2.authorize();
-    console.log('Backblaze auth response:', JSON.stringify(authResponse.data, null, 2));
+    console.log('Backblaze auth response at:', new Date().toISOString(), JSON.stringify(authResponse.data, null, 2));
 
     // Generate signed URL
     const response = await b2.getDownloadAuthorization({
@@ -70,16 +76,16 @@ app.get('/file-url', async (req, res) => {
       validDurationInSeconds: 3600, // URL valid for 1 hour
     });
 
-    console.log('Backblaze download auth response:', JSON.stringify(response.data, null, 2));
+    console.log('Backblaze download auth response at:', new Date().toISOString(), JSON.stringify(response.data, null, 2));
 
     // Fallback to account's downloadUrl or default endpoint
     const downloadUrl = response.data.downloadUrl || authResponse.data.downloadUrl || `https://f000.backblazeb2.com`;
     const signedUrl = `${downloadUrl}/file/${process.env.BUCKET_NAME}/${filePath}?Authorization=${response.data.authorizationToken}`;
-    console.log(`Generated signed URL: ${signedUrl}`);
+    console.log(`Generated signed URL: ${signedUrl} at`, new Date().toISOString());
 
     res.json({ url: signedUrl });
   } catch (err) {
-    console.error(`Error generating signed URL for ${filePath}:`, err.message, err);
+    console.error(`Error generating signed URL for ${filePath} at`, new Date().toISOString(), err.message, err);
     res.status(500).json({ error: 'Failed to generate signed URL', details: err.message });
   }
 });
@@ -88,17 +94,18 @@ app.get('/file-url', async (req, res) => {
 app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), async (req, res) => {
   const idToken = req.headers.authorization?.split('Bearer ')[1];
   if (!idToken) {
-    console.error('Missing idToken');
+    console.error('Missing idToken at', new Date().toISOString());
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
   try {
+    console.log('Upload request received at', new Date().toISOString());
     // Verify Firebase ID token
     await admin.auth().verifyIdToken(idToken);
-    console.log('Verified token for upload');
+    console.log('Token verified at', new Date().toISOString());
 
-    // Authorize Backblaze
-    await b2.authorize();
+    // Ensure B2 is initialized
+    if (!b2) await initializeB2();
 
     const uuid = uuidv4();
     const videoFile = req.files['video'][0];
@@ -110,13 +117,14 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
     const description = req.body.description;
 
     if (!videoFile || !thumbnailFile || !name || !price || !description) {
-      console.error('Missing required fields or files:', { videoFile: !!videoFile, thumbnailFile: !!thumbnailFile, name, price, description });
+      console.error('Missing required fields or files at', new Date().toISOString(), { videoFile: !!videoFile, thumbnailFile: !!thumbnailFile, name, price, description });
       return res.status(400).json({ error: 'Missing required fields or files' });
     }
 
     // Set response to chunked encoding
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Transfer-Encoding', 'chunked');
+    console.log('Response headers set at', new Date().toISOString());
 
     // Upload video with estimated progress
     const videoTotalBytes = videoFile.size;
@@ -124,6 +132,7 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
     const estimatedDurationSeconds = videoTotalBytes / (uploadSpeedKBps * 1024); // Seconds
     let videoProgress = 0;
     res.write(JSON.stringify({ progress: 0 }) + '\n'); // Initial progress
+    console.log('Video upload started at', new Date().toISOString());
     const videoInterval = setInterval(() => {
       if (videoProgress < 0.5) {
         videoProgress += 0.02; // 2% increments
@@ -133,7 +142,6 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
     }, 200); // Update every 200ms
 
     const videoUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
-    await new Promise((resolve) => setTimeout(resolve, estimatedDurationSeconds * 1000)); // Simulate upload time
     await b2.uploadFile({
       uploadUrl: videoUploadResponse.data.uploadUrl,
       uploadAuthToken: videoUploadResponse.data.authorizationToken,
@@ -142,6 +150,7 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
     });
     clearInterval(videoInterval);
     res.write(JSON.stringify({ progress: 0.5 }) + '\n'); // Confirm 50% on completion
+    console.log('Video upload completed at', new Date().toISOString());
 
     // Upload thumbnail with estimated progress
     const thumbnailTotalBytes = thumbnailFile.size;
@@ -156,7 +165,6 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
     }, 200); // Update every 200ms
 
     const thumbnailUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
-    await new Promise((resolve) => setTimeout(resolve, estimatedThumbnailDurationSeconds * 1000)); // Simulate upload time
     await b2.uploadFile({
       uploadUrl: thumbnailUploadResponse.data.uploadUrl,
       uploadAuthToken: thumbnailUploadResponse.data.authorizationToken,
@@ -165,6 +173,7 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
     });
     clearInterval(thumbnailInterval);
     res.write(JSON.stringify({ progress: 1.0 }) + '\n'); // Confirm 100% on completion
+    console.log('Thumbnail upload completed at', new Date().toISOString());
 
     // Ensure final response is complete
     try {
@@ -172,12 +181,13 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
         videoUrl: videoPath,
         thumbnailUrl: thumbnailPath,
       }) + '\n'); // Add newline for consistency
+      console.log('Final response sent at', new Date().toISOString());
     } catch (err) {
-      console.error('Final response error:', err);
+      console.error('Final response error at', new Date().toISOString(), err);
       res.status(500).end(JSON.stringify({ error: 'Failed to send final response', details: err.message }) + '\n');
     }
   } catch (err) {
-    console.error('Upload error:', err.message, err.stack);
+    console.error('Upload error at', new Date().toISOString(), err.message, err.stack);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Upload failed', details: err.message });
     } else {
@@ -201,4 +211,4 @@ app.get('/health', (req, res) => {
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Running on port ${port}`));
+app.listen(port, () => console.log(`Running on port ${port} at`, new Date().toISOString()));
