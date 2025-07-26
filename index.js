@@ -124,7 +124,6 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
     const videoUploadStream = new stream.PassThrough();
     videoUploadStream.end(videoFile.buffer);
 
-    // Custom readable stream to track progress
     const videoProgressStream = new stream.Transform({
       transform(chunk, encoding, callback) {
         videoUploadedBytes += chunk.length;
@@ -173,17 +172,22 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
       data: thumbnailProgressStream,
     });
 
-    // Final response with URLs
-    res.end(JSON.stringify({
-      videoUrl: videoPath,
-      thumbnailUrl: thumbnailPath,
-    }));
+    // Ensure final response is complete
+    try {
+      res.end(JSON.stringify({
+        videoUrl: videoPath,
+        thumbnailUrl: thumbnailPath,
+      }) + '\n'); // Add newline for consistency
+    } catch (err) {
+      console.error('Final response error:', err);
+      res.status(500).end(JSON.stringify({ error: 'Failed to send final response', details: err.message }) + '\n');
+    }
   } catch (err) {
     console.error('Upload error:', err.message, err.stack);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Upload failed', details: err.message });
     } else {
-      res.status(500).end();
+      res.status(500).end(JSON.stringify({ error: 'Upload failed', details: err.message }) + '\n');
     }
   }
 });
