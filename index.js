@@ -83,8 +83,6 @@ app.get('/file-url', async (req, res) => {
   }
 });
 
-// New endpoint to handle file uploads
-// ... (previous code remains the same until the /upload endpoint) ...
 
 // New endpoint to handle file uploads
 app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), async (req, res) => {
