@@ -1,19 +1,5 @@
 {
-  "name": "b2-backend",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
   "dependencies": {
-    "backblaze-b2": "^1.7.1",
-    "cors": "^2.8.5",
-    "dotenv": "^17.2.1",
-    "express": "^5.1.0",
-    "firebase-admin": "^13.4.0"
+    "mutter": "^1.0.1"
   }
 }
