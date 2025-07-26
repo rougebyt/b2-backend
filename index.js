@@ -121,41 +121,56 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
     // Upload video with progress
     const videoTotalBytes = videoFile.size;
     let videoUploadedBytes = 0;
-    const videoUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
     const videoUploadStream = new stream.PassThrough();
     videoUploadStream.end(videoFile.buffer);
 
-    videoUploadStream.on('data', (chunk) => {
-      videoUploadedBytes += chunk.length;
-      const progress = Math.min((videoUploadedBytes / videoTotalBytes) * 0.5, 0.5); // 50% for video
-      res.write(JSON.stringify({ progress }) + '\n');
+    // Custom readable stream to track progress
+    const videoProgressStream = new stream.Transform({
+      transform(chunk, encoding, callback) {
+        videoUploadedBytes += chunk.length;
+        const progress = Math.min((videoUploadedBytes / videoTotalBytes) * 0.5, 0.5); // 50% for video
+        res.write(JSON.stringify({ progress }) + '\n');
+        callback(null, chunk);
+      },
     });
 
+    videoUploadStream.pipe(videoProgressStream).pipe(new stream.PassThrough()).on('error', (err) => {
+      console.error('Video stream error:', err);
+    });
+
+    const videoUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
     await b2.uploadFile({
       uploadUrl: videoUploadResponse.data.uploadUrl,
       uploadAuthToken: videoUploadResponse.data.authorizationToken,
       fileName: videoPath,
-      data: videoUploadStream,
+      data: videoProgressStream,
     });
 
     // Upload thumbnail with progress
     const thumbnailTotalBytes = thumbnailFile.size;
     let thumbnailUploadedBytes = 0;
-    const thumbnailUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
     const thumbnailUploadStream = new stream.PassThrough();
     thumbnailUploadStream.end(thumbnailFile.buffer);
 
-    thumbnailUploadStream.on('data', (chunk) => {
-      thumbnailUploadedBytes += chunk.length;
-      const progress = 0.5 + Math.min((thumbnailUploadedBytes / thumbnailTotalBytes) * 0.5, 0.5); // 50% for thumbnail
-      res.write(JSON.stringify({ progress }) + '\n');
+    const thumbnailProgressStream = new stream.Transform({
+      transform(chunk, encoding, callback) {
+        thumbnailUploadedBytes += chunk.length;
+        const progress = 0.5 + Math.min((thumbnailUploadedBytes / thumbnailTotalBytes) * 0.5, 0.5); // 50% for thumbnail
+        res.write(JSON.stringify({ progress }) + '\n');
+        callback(null, chunk);
+      },
     });
 
+    thumbnailUploadStream.pipe(thumbnailProgressStream).pipe(new stream.PassThrough()).on('error', (err) => {
+      console.error('Thumbnail stream error:', err);
+    });
+
+    const thumbnailUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
     await b2.uploadFile({
       uploadUrl: thumbnailUploadResponse.data.uploadUrl,
       uploadAuthToken: thumbnailUploadResponse.data.authorizationToken,
       fileName: thumbnailPath,
-      data: thumbnailUploadStream,
+      data: thumbnailProgressStream,
     });
 
     // Final response with URLs
@@ -164,8 +179,12 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
       thumbnailUrl: thumbnailPath,
     }));
   } catch (err) {
-    console.error('Upload error:', err.message, err);
-    res.status(500).json({ error: 'Upload failed', details: err.message });
+    console.error('Upload error:', err.message, err.stack);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Upload failed', details: err.message });
+    } else {
+      res.status(500).end();
+    }
   }
 });
 
