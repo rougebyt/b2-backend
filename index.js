@@ -118,58 +118,49 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Transfer-Encoding', 'chunked');
 
-    // Upload video with progress
+    // Upload video with estimated progress
     const videoTotalBytes = videoFile.size;
-    let videoUploadedBytes = 0;
-    const videoUploadStream = new stream.PassThrough();
-    videoUploadStream.end(videoFile.buffer);
-
-    const videoProgressStream = new stream.Transform({
-      transform(chunk, encoding, callback) {
-        videoUploadedBytes += chunk.length;
-        const progress = Math.min((videoUploadedBytes / videoTotalBytes) * 0.5, 0.5); // 50% for video
-        res.write(JSON.stringify({ progress }) + '\n');
-        callback(null, chunk);
-      },
-    });
-
-    // Pipe to a PassThrough to convert back to compatible format
-    const videoOutputStream = new stream.PassThrough();
-    videoUploadStream.pipe(videoProgressStream).pipe(videoOutputStream);
+    const estimatedDuration = videoTotalBytes / 1000000; // Approx 1 MB/s
+    let videoProgress = 0;
+    const videoInterval = setInterval(() => {
+      if (videoProgress < 0.5) {
+        videoProgress += 0.1; // Increment by 10% up to 50%
+        if (videoProgress > 0.5) videoProgress = 0.5;
+        res.write(JSON.stringify({ progress: videoProgress }) + '\n');
+      }
+    }, 500); // Update every 500ms
 
     const videoUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
     await b2.uploadFile({
       uploadUrl: videoUploadResponse.data.uploadUrl,
       uploadAuthToken: videoUploadResponse.data.authorizationToken,
       fileName: videoPath,
-      data: videoFile.buffer, // Use raw buffer instead of transform stream
+      data: videoFile.buffer,
     });
+    clearInterval(videoInterval);
+    res.write(JSON.stringify({ progress: 0.5 }) + '\n'); // Confirm 50% on completion
 
-    // Upload thumbnail with progress
+    // Upload thumbnail with estimated progress
     const thumbnailTotalBytes = thumbnailFile.size;
-    let thumbnailUploadedBytes = 0;
-    const thumbnailUploadStream = new stream.PassThrough();
-    thumbnailUploadStream.end(thumbnailFile.buffer);
-
-    const thumbnailProgressStream = new stream.Transform({
-      transform(chunk, encoding, callback) {
-        thumbnailUploadedBytes += chunk.length;
-        const progress = 0.5 + Math.min((thumbnailUploadedBytes / thumbnailTotalBytes) * 0.5, 0.5); // 50% for thumbnail
-        res.write(JSON.stringify({ progress }) + '\n');
-        callback(null, chunk);
-      },
-    });
-
-    const thumbnailOutputStream = new stream.PassThrough();
-    thumbnailUploadStream.pipe(thumbnailProgressStream).pipe(thumbnailOutputStream);
+    const estimatedThumbnailDuration = thumbnailTotalBytes / 1000000; // Approx 1 MB/s
+    let thumbnailProgress = 0.5;
+    const thumbnailInterval = setInterval(() => {
+      if (thumbnailProgress < 1.0) {
+        thumbnailProgress += 0.1; // Increment by 10% up to 100%
+        if (thumbnailProgress > 1.0) thumbnailProgress = 1.0;
+        res.write(JSON.stringify({ progress: thumbnailProgress }) + '\n');
+      }
+    }, 500); // Update every 500ms
 
     const thumbnailUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
     await b2.uploadFile({
       uploadUrl: thumbnailUploadResponse.data.uploadUrl,
       uploadAuthToken: thumbnailUploadResponse.data.authorizationToken,
       fileName: thumbnailPath,
-      data: thumbnailFile.buffer, // Use raw buffer instead of transform stream
+      data: thumbnailFile.buffer,
     });
+    clearInterval(thumbnailInterval);
+    res.write(JSON.stringify({ progress: 1.0 }) + '\n'); // Confirm 100% on completion
 
     // Ensure final response is complete
     try {
