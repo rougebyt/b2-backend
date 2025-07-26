@@ -5,6 +5,7 @@ const admin = require('firebase-admin');
 const B2 = require('backblaze-b2');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid'); // For generating UUIDs
+const stream = require('stream'); // For custom stream handling
 
 const app = express();
 
@@ -83,8 +84,7 @@ app.get('/file-url', async (req, res) => {
   }
 });
 
-
-// New endpoint to handle file uploads
+// New endpoint to handle file uploads with progress streaming
 app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), async (req, res) => {
   const idToken = req.headers.authorization?.split('Bearer ')[1];
   if (!idToken) {
@@ -114,29 +114,55 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
       return res.status(400).json({ error: 'Missing required fields or files' });
     }
 
-    // Upload video to Backblaze
+    // Set response to chunked encoding
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Transfer-Encoding', 'chunked');
+
+    // Upload video with progress
+    const videoTotalBytes = videoFile.size;
+    let videoUploadedBytes = 0;
     const videoUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
+    const videoUploadStream = new stream.PassThrough();
+    videoUploadStream.end(videoFile.buffer);
+
+    videoUploadStream.on('data', (chunk) => {
+      videoUploadedBytes += chunk.length;
+      const progress = Math.min((videoUploadedBytes / videoTotalBytes) * 0.5, 0.5); // 50% for video
+      res.write(JSON.stringify({ progress }) + '\n');
+    });
+
     await b2.uploadFile({
       uploadUrl: videoUploadResponse.data.uploadUrl,
       uploadAuthToken: videoUploadResponse.data.authorizationToken,
       fileName: videoPath,
-      data: videoFile.buffer,
+      data: videoUploadStream,
     });
 
-    // Upload thumbnail to Backblaze
+    // Upload thumbnail with progress
+    const thumbnailTotalBytes = thumbnailFile.size;
+    let thumbnailUploadedBytes = 0;
     const thumbnailUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
+    const thumbnailUploadStream = new stream.PassThrough();
+    thumbnailUploadStream.end(thumbnailFile.buffer);
+
+    thumbnailUploadStream.on('data', (chunk) => {
+      thumbnailUploadedBytes += chunk.length;
+      const progress = 0.5 + Math.min((thumbnailUploadedBytes / thumbnailTotalBytes) * 0.5, 0.5); // 50% for thumbnail
+      res.write(JSON.stringify({ progress }) + '\n');
+    });
+
     await b2.uploadFile({
       uploadUrl: thumbnailUploadResponse.data.uploadUrl,
       uploadAuthToken: thumbnailUploadResponse.data.authorizationToken,
       fileName: thumbnailPath,
-      data: thumbnailFile.buffer,
+      data: thumbnailUploadStream,
     });
 
-    // Return relative paths instead of full URLs
-    res.json({
+    // Final response with URLs
+    res.end(JSON.stringify({
       videoUrl: videoPath,
       thumbnailUrl: thumbnailPath,
-    });
+    }));
   } catch (err) {
     console.error('Upload error:', err.message, err);
     res.status(500).json({ error: 'Upload failed', details: err.message });
