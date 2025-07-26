@@ -133,16 +133,16 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
       },
     });
 
-    videoUploadStream.pipe(videoProgressStream).pipe(new stream.PassThrough()).on('error', (err) => {
-      console.error('Video stream error:', err);
-    });
+    // Pipe to a PassThrough to convert back to compatible format
+    const videoOutputStream = new stream.PassThrough();
+    videoUploadStream.pipe(videoProgressStream).pipe(videoOutputStream);
 
     const videoUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
     await b2.uploadFile({
       uploadUrl: videoUploadResponse.data.uploadUrl,
       uploadAuthToken: videoUploadResponse.data.authorizationToken,
       fileName: videoPath,
-      data: videoProgressStream,
+      data: videoFile.buffer, // Use raw buffer instead of transform stream
     });
 
     // Upload thumbnail with progress
@@ -160,16 +160,15 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
       },
     });
 
-    thumbnailUploadStream.pipe(thumbnailProgressStream).pipe(new stream.PassThrough()).on('error', (err) => {
-      console.error('Thumbnail stream error:', err);
-    });
+    const thumbnailOutputStream = new stream.PassThrough();
+    thumbnailUploadStream.pipe(thumbnailProgressStream).pipe(thumbnailOutputStream);
 
     const thumbnailUploadResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
     await b2.uploadFile({
       uploadUrl: thumbnailUploadResponse.data.uploadUrl,
       uploadAuthToken: thumbnailUploadResponse.data.authorizationToken,
       fileName: thumbnailPath,
-      data: thumbnailProgressStream,
+      data: thumbnailFile.buffer, // Use raw buffer instead of transform stream
     });
 
     // Ensure final response is complete
