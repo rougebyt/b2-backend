@@ -113,12 +113,26 @@ app.post('/upload', upload.fields([{ name: 'video' }, { name: 'thumbnail' }]), a
     const videoPath = `vid_${uuid}.mp4`;
     const thumbnailPath = `thumb_${uuid}.jpg`;
     const name = req.body.name;
-    const price = req.body.price;
     const description = req.body.description;
+    const courseId = req.body.courseId;
 
-    if (!videoFile || !thumbnailFile || !name || !price || !description) {
-      console.error('Missing required fields or files at', new Date().toISOString(), { videoFile: !!videoFile, thumbnailFile: !!thumbnailFile, name, price, description });
+    if (!videoFile || !thumbnailFile || !name || !description || !courseId) {
+      console.error('Missing required fields or files at', new Date().toISOString(), { videoFile: !!videoFile, thumbnailFile: !!thumbnailFile, name, description, courseId });
       return res.status(400).json({ error: 'Missing required fields or files' });
+    }
+
+    // Fetch price from course in Firestore
+    let price = 0;
+    try {
+      const courseDoc = await admin.firestore().collection('courses').doc(courseId).get();
+      if (courseDoc.exists) {
+        price = courseDoc.data()?.price || 0;
+        console.log(`Fetched price ${price} from course ${courseId} at`, new Date().toISOString());
+      } else {
+        console.warn(`Course ${courseId} not found, using default price 0 at`, new Date().toISOString());
+      }
+    } catch (err) {
+      console.error(`Error fetching course ${courseId} price at`, new Date().toISOString(), err.message);
     }
 
     // Set response to chunked encoding
