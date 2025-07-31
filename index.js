@@ -84,6 +84,11 @@ app.get('/file-url', async (req, res) => {
 
 // Updated upload endpoint to handle single file with type
 app.post('/upload', upload.single('file'), async (req, res) => {
+  console.log('Received upload request:', {
+    headers: req.headers,
+    body: req.body,
+    file: !!req.file,
+  });
   const idToken = req.headers.authorization?.split('Bearer ')[1];
   if (!idToken) {
     console.error('Missing idToken at', new Date().toISOString());
@@ -97,7 +102,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 
     if (!b2) await initializeB2();
 
-    const type = req.body.type; // 'video', 'pdf', or 'thumbnail'
+    const type = req.body.type;
     const courseId = req.body.courseId;
     const uploader = req.body.uploader;
     const name = req.body.name || 'Untitled';
@@ -131,14 +136,12 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Invalid file type' });
     }
 
-    // Set response to chunked encoding
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Transfer-Encoding', 'chunked');
     console.log('Response headers set at', new Date().toISOString());
 
-    // Upload file with progress
     const totalBytes = file.size;
-    const uploadSpeedKBps = 500; // Adjustable
+    const uploadSpeedKBps = 500;
     const estimatedDurationSeconds = totalBytes / (uploadSpeedKBps * 1024);
     let progress = 0;
     res.write(JSON.stringify({ progress: 0 }) + '\n');
@@ -163,7 +166,6 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     res.write(JSON.stringify({ progress: 1.0 }) + '\n');
     console.log(`${type} upload completed at`, new Date().toISOString());
 
-    // Store in Firestore
     try {
       if (type === 'thumbnail') {
         await admin.firestore().collection('courses').doc(courseId).update({
@@ -197,25 +199,14 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       throw err;
     }
 
-    // Send final response
-    try {
-      const responseData = type === 'thumbnail' ? { thumbnailUrl: filePath } : { fileUrl: filePath };
-      res.end(JSON.stringify(responseData) + '\n');
-      console.log('Final response sent at', new Date().toISOString(), responseData);
-    } catch (err) {
-      console.error('Final response error at', new Date().toISOString(), err);
-      res.status(500).end(JSON.stringify({ error: 'Failed to send final response', details: err.message }) + '\n');
-    }
+    const responseData = type === 'thumbnail' ? { thumbnailUrl: filePath } : { fileUrl: filePath };
+    res.end(JSON.stringify(responseData) + '\n');
+    console.log('Final response sent at', new Date().toISOString(), responseData);
   } catch (err) {
     console.error('Upload error at', new Date().toISOString(), err.message, err.stack);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Upload failed', details: err.message });
-    } else {
-      res.status(500).end(JSON.stringify({ error: 'Upload failed', details: err.message }) + '\n');
-    }
+    res.status(500).json({ error: 'Upload failed', details: err.message });
   }
 });
-
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({
