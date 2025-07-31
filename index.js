@@ -10,7 +10,7 @@ const app = express();
 
 // Configure CORS for Flutter web app
 app.use(cors({
-  origin: ['http://localhost:63055', 'https://your-production-domain.com'],
+  origin: ['http://localhost:63055', 'http://localhost:3000', 'https://your-production-domain.com'],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Authorization', 'Content-Type'],
 }));
@@ -26,9 +26,9 @@ try {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
   });
-  console.log('Firebase initialized successfully');
+  console.log('Firebase initialized successfully at', new Date().toISOString());
 } catch (err) {
-  console.error('Firebase initialization failed:', err.message);
+  console.error('Firebase initialization failed at', new Date().toISOString(), err.message);
   console.error('Invalid JSON content:', process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON || 'Undefined');
   process.exit(1);
 }
@@ -36,12 +36,17 @@ try {
 // Initialize Backblaze B2
 let b2 = null;
 async function initializeB2() {
-  b2 = new B2({
-    applicationKeyId: process.env.KEY_ID,
-    applicationKey: process.env.APP_KEY,
-  });
-  await b2.authorize();
-  console.log('B2 initialized and authorized at', new Date().toISOString());
+  try {
+    b2 = new B2({
+      applicationKeyId: process.env.KEY_ID,
+      applicationKey: process.env.APP_KEY,
+    });
+    await b2.authorize();
+    console.log('B2 initialized and authorized at', new Date().toISOString());
+  } catch (err) {
+    console.error('B2 initialization failed at', new Date().toISOString(), err.message);
+    throw err;
+  }
 }
 initializeB2().catch(err => console.error('B2 initialization failed:', err));
 
@@ -55,7 +60,7 @@ app.get('/file-url', async (req, res) => {
   const filePath = req.query.file;
 
   if (!idToken || !filePath) {
-    console.error('Missing idToken or filePath:', { idToken: !!idToken, filePath });
+    console.error('Missing idToken or filePath at', new Date().toISOString(), { idToken: !!idToken, filePath });
     return res.status(400).json({ error: 'Missing idToken or filePath' });
   }
 
@@ -77,94 +82,86 @@ app.get('/file-url', async (req, res) => {
 
     res.json({ url: signedUrl });
   } catch (err) {
-    console.error(`Error generating signed URL for ${filePath} at`, new Date().toISOString(), err.message, err);
+    console.error(`Error generating signed URL for ${filePath} at`, new Date().toISOString(), err.message, err.stack);
     res.status(500).json({ error: 'Failed to generate signed URL', details: err.message });
   }
 });
 
-// Updated upload endpoint to handle single file with type
+// Updated upload endpoint
 app.post('/upload', upload.single('file'), async (req, res) => {
-  console.log('Received upload request:', {
+  console.log('Received upload request at', new Date().toISOString(), {
     headers: req.headers,
     body: req.body,
     file: !!req.file,
   });
-  const idToken = req.headers.authorization?.split('Bearer ')[1];
-  if (!idToken) {
-    console.error('Missing idToken at', new Date().toISOString());
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
 
   try {
-    console.log('Upload request received at', new Date().toISOString());
+    const idToken = req.headers.authorization?.split('Bearer ')[1];
+    if (!idToken) {
+      console.error('Missing idToken at', new Date().toISOString());
+      return res.status(401).json({ error: 'Unauthorized: Missing ID token' });
+    }
+
+    console.log('Verifying token at', new Date().toISOString());
     await admin.auth().verifyIdToken(idToken);
-    console.log('Token verified at', new Date().toISOString());
 
     if (!b2) await initializeB2();
+    console.log('Backblaze initialized at', new Date().toISOString());
 
-    const type = req.body.type;
-    const courseId = req.body.courseId;
-    const uploader = req.body.uploader;
-    const name = req.body.name || 'Untitled';
-    const description = req.body.description || 'No description';
-    const sectionId = req.body.sectionId || 'default';
-    const contentId = req.body.contentId;
-    const duration = req.body.duration;
+    const { type, courseId, uploader, name = 'Untitled', description = 'No description', sectionId = 'default', contentId, duration } = req.body;
     const file = req.file;
 
     if (!type || !courseId || !uploader || !file || (type !== 'thumbnail' && !contentId)) {
-      console.error('Missing required fields or file at', new Date().toISOString(), {
-        type,
-        courseId,
-        uploader,
-        file: !!file,
-        contentId,
-      });
+      console.error('Missing required fields at', new Date().toISOString(), { type, courseId, uploader, file: !!file, contentId });
       return res.status(400).json({ error: 'Missing required fields or file' });
+    }
+
+    if (!['video', 'pdf', 'thumbnail'].includes(type)) {
+      console.error('Invalid file type at', new Date().toISOString(), { type });
+      return res.status(400).json({ error: 'Invalid file type' });
     }
 
     const uuid = uuidv4();
     let filePath;
-    if (type === 'video') {
-      filePath = `vid_${uuid}.mp4`;
-    } else if (type === 'pdf') {
-      filePath = `pdf_${uuid}.pdf`;
-    } else if (type === 'thumbnail') {
-      filePath = `thumb_${uuid}.jpg`;
-    } else {
-      console.error('Invalid file type:', type);
-      return res.status(400).json({ error: 'Invalid file type' });
-    }
+    if (type === 'video') filePath = `vid_${uuid}.mp4`;
+    else if (type === 'pdf') filePath = `pdf_${uuid}.pdf`;
+    else filePath = `thumb_${uuid}.jpg`;
 
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Transfer-Encoding', 'chunked');
-    console.log('Response headers set at', new Date().toISOString());
+    console.log('Starting upload simulation for', type, 'at', new Date().toISOString());
+    res.write(JSON.stringify({ progress: 0 }) + '\n');
 
     const totalBytes = file.size;
     const uploadSpeedKBps = 500;
     const estimatedDurationSeconds = totalBytes / (uploadSpeedKBps * 1024);
     let progress = 0;
-    res.write(JSON.stringify({ progress: 0 }) + '\n');
-    console.log(`${type} upload started at`, new Date().toISOString());
 
     const interval = setInterval(() => {
       if (progress < 0.95) {
         progress += 0.02;
-        if (progress > 0.95) progress = 0.95;
         res.write(JSON.stringify({ progress }) + '\n');
       }
     }, 200);
 
-    const uploadUrlResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
-    await b2.uploadFile({
-      uploadUrl: uploadUrlResponse.data.uploadUrl,
-      uploadAuthToken: uploadUrlResponse.data.authorizationToken,
-      fileName: filePath,
-      data: file.buffer,
-    });
-    clearInterval(interval);
+    try {
+      const uploadUrlResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
+      console.log('Got upload URL at', new Date().toISOString());
+      await b2.uploadFile({
+        uploadUrl: uploadUrlResponse.data.uploadUrl,
+        uploadAuthToken: uploadUrlResponse.data.authorizationToken,
+        fileName: filePath,
+        data: file.buffer,
+      });
+      console.log(`${type} uploaded to Backblaze at`, new Date().toISOString());
+    } catch (err) {
+      console.error('Backblaze upload failed at', new Date().toISOString(), err.message, err.stack);
+      throw new Error(`Backblaze upload failed: ${err.message}`);
+    } finally {
+      clearInterval(interval);
+    }
+
     res.write(JSON.stringify({ progress: 1.0 }) + '\n');
-    console.log(`${type} upload completed at`, new Date().toISOString());
 
     try {
       if (type === 'thumbnail') {
@@ -176,14 +173,13 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       } else {
         const contentData = {
           title: name,
-          type: type,
+          type,
           backblazePath: filePath,
-          description: description,
-          uploader: uploader,
+          description,
+          uploader,
           uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+          ...(type === 'video' && duration ? { duration } : {}),
         };
-        if (type === 'video' && duration) contentData.duration = duration;
-
         await admin.firestore()
           .collection('courses')
           .doc(courseId)
@@ -195,18 +191,19 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         console.log(`Stored ${type} path ${filePath} for course ${courseId}, section ${sectionId}, content ${contentId} at`, new Date().toISOString());
       }
     } catch (err) {
-      console.error('Firestore write error at', new Date().toISOString(), err.message);
-      throw err;
+      console.error('Firestore write error at', new Date().toISOString(), err.message, err.stack);
+      throw new Error(`Firestore write failed: ${err.message}`);
     }
 
     const responseData = type === 'thumbnail' ? { thumbnailUrl: filePath } : { fileUrl: filePath };
     res.end(JSON.stringify(responseData) + '\n');
-    console.log('Final response sent at', new Date().toISOString(), responseData);
+    console.log('Upload completed successfully at', new Date().toISOString(), responseData);
   } catch (err) {
     console.error('Upload error at', new Date().toISOString(), err.message, err.stack);
     res.status(500).json({ error: 'Upload failed', details: err.message });
   }
 });
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({
