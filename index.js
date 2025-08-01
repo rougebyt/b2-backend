@@ -5,10 +5,9 @@ const admin = require('firebase-admin');
 const BackblazeB2 = require('backblaze-b2');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
-const ffmpeg = require('fluent-ffmpeg');
 const path = require('path');
-const fs = require('fs').promises;
-const os = require('os');
+const ffmpeg = require('fluent-ffmpeg');
+const { Readable } = require('stream');
 
 const app = express();
 
@@ -54,54 +53,132 @@ async function initializeB2() {
 }
 initializeB2().catch(err => console.error('B2 initialization failed:', err));
 
+// Check ffmpeg and ffprobe availability
+try {
+  ffmpeg.getAvailableCodecs((err, codecs) => {
+    if (err) {
+      console.error('ffmpeg not found:', err.message);
+    } else {
+      console.log('ffmpeg found:', Object.keys(codecs).length, 'codecs available');
+    }
+  });
+  ffmpeg.ffprobe((err, metadata) => {
+    if (err) {
+      console.error('ffprobe not found:', err.message);
+    } else {
+      console.log('ffprobe found:', metadata ? 'metadata available' : 'no metadata');
+    }
+  });
+} catch (err) {
+  console.error('Error checking ffmpeg/ffprobe:', err.message);
+}
+
+// Helper function to convert mm:ss to seconds
+function parseDurationToSeconds(duration) {
+  if (!duration || duration === '00:00') return 0;
+  const [minutes, seconds] = duration.split(':').map(Number);
+  return minutes * 60 + seconds;
+}
+
+// Helper function to convert seconds to mm:ss
+function formatSecondsToDuration(seconds) {
+  if (!seconds || seconds <= 0) return '00:00';
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  return hours > 0
+    ? `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+    : `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+// Helper function to get total duration for a section
+async function getSectionTotalLength(courseId, sectionId) {
+  try {
+    const contentsSnapshot = await admin.firestore()
+      .collection('courses')
+      .doc(courseId)
+      .collection('sections')
+      .doc(sectionId)
+      .collection('contents')
+      .where('type', '==', 'video')
+      .get();
+    const totalSeconds = contentsSnapshot.docs.reduce((sum, doc) => {
+      const duration = doc.data().duration || '00:00';
+      return sum + parseDurationToSeconds(duration);
+    }, 0);
+    return formatSecondsToDuration(totalSeconds);
+  } catch (err) {
+    console.error(`Error calculating section totalLength for course ${courseId}, section ${sectionId}:`, err.message);
+    return '00:00';
+  }
+}
+
+// Helper function to get total duration for a course
+async function getCourseTotalLength(courseId) {
+  try {
+    const sectionsSnapshot = await admin.firestore()
+      .collection('courses')
+      .doc(courseId)
+      .collection('sections')
+      .get();
+    let totalSeconds = 0;
+    for (const sectionDoc of sectionsSnapshot.docs) {
+      const contentsSnapshot = await admin.firestore()
+        .collection('courses')
+        .doc(courseId)
+        .collection('sections')
+        .doc(sectionDoc.id)
+        .collection('contents')
+        .where('type', '==', 'video')
+        .get();
+      totalSeconds += contentsSnapshot.docs.reduce((sum, doc) => {
+        const duration = doc.data().duration || '00:00';
+        return sum + parseDurationToSeconds(duration);
+      }, 0);
+    }
+    return formatSecondsToDuration(totalSeconds);
+  } catch (err) {
+    console.error(`Error calculating course totalLength for course ${courseId}:`, err.message);
+    return '00:00';
+  }
+}
+
 // Configure multer for file uploads
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// Video duration extraction
-async function getVideoDuration(fileBuffer, originalName) {
-  return new Promise((resolve, reject) => {
-    const fileExtension = path.extname(originalName).toLowerCase();
-    const tempPath = path.join(os.tmpdir(), `temp-${uuidv4()}${fileExtension}`);
-    console.log(`Writing temp file for duration extraction: ${tempPath} at`, new Date().toISOString());
-    fs.writeFile(tempPath, fileBuffer)
-      .then(() => {
-        console.log(`Starting ffprobe for ${tempPath} at`, new Date().toISOString());
-        ffmpeg.ffprobe(tempPath, (err, metadata) => {
-          fs.unlink(tempPath).catch(err => console.error('Failed to delete temp file:', err));
+// Function to get video duration
+async function getVideoDuration(filePath, buffer) {
+  return new Promise((resolve) => {
+    try {
+      // Create a readable stream from buffer
+      const stream = Readable.from(buffer);
+      ffmpeg(stream)
+        .ffprobe((err, metadata) => {
           if (err) {
-            console.error('Error extracting video duration:', err.message, err.stack);
-            return resolve('00:00'); // Fallback duration
+            console.error(`ffprobe error for ${filePath}:`, err.message, err.stack);
+            resolve('00:00');
+            return;
           }
-          console.log(`ffprobe metadata for ${tempPath}:`, JSON.stringify(metadata.format, null, 2));
-          const durationSeconds = metadata.format.duration;
-          if (!durationSeconds || isNaN(durationSeconds)) {
-            console.error('No valid duration found in metadata for', tempPath, 'at', new Date().toISOString());
-            return resolve('00:00'); // Fallback duration
+          console.log(`ffprobe metadata for ${filePath}:`, JSON.stringify(metadata, null, 2));
+          const duration = metadata.format?.duration;
+          if (!duration || isNaN(duration)) {
+            console.error(`Invalid or missing duration in metadata for ${filePath}`);
+            resolve('00:00');
+            return;
           }
-          const duration = Math.floor(durationSeconds);
-          const hours = Math.floor(duration / 3600);
-          const minutes = Math.floor((duration % 3600) / 60);
-          const seconds = duration % 60;
-          const formatted = hours > 0
-            ? `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
-            : `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-          console.log(`Extracted duration: ${formatted} for ${tempPath} at`, new Date().toISOString());
-          resolve(formatted);
+          const totalSeconds = Math.round(duration);
+          const minutes = Math.floor(totalSeconds / 60);
+          const seconds = totalSeconds % 60;
+          const formattedDuration = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+          console.log(`Extracted duration: ${formattedDuration} for ${filePath}`);
+          resolve(formattedDuration);
         });
-      })
-      .catch(err => {
-        console.error('Error writing temp file for ffprobe:', err.message, err.stack);
-        resolve('00:00'); // Fallback duration
-      });
+    } catch (err) {
+      console.error(`Error processing ${filePath} with ffmpeg:`, err.message, err.stack);
+      resolve('00:00');
+    }
   });
-}
-
-// Add String.prototype.padStart for formatting
-if (!String.prototype.padStart) {
-  String.prototype.padStart = function(length, char) {
-    return char.repeat(Math.max(0, length - this.length)) + this;
-  };
 }
 
 // Endpoint to generate signed URL for Backblaze files
@@ -137,12 +214,13 @@ app.get('/file-url', async (req, res) => {
   }
 });
 
-// Updated upload endpoint with fallback duration
+// Upload endpoint
 app.post('/upload', upload.single('file'), async (req, res) => {
   console.log('Received upload request at', new Date().toISOString(), {
     headers: req.headers,
     body: req.body,
     file: !!req.file,
+    fileSize: req.file?.size,
   });
 
   try {
@@ -200,13 +278,11 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       filePath = `thumbnails/thumb_${uuid}${fileExtension}`;
     }
 
-    let serverDuration = null;
+    let duration = '00:00';
     if (type === 'video') {
-      serverDuration = await getVideoDuration(file.buffer, file.originalname);
-      console.log(`Extracted video duration: ${serverDuration} for ${filePath} at`, new Date().toISOString());
-      if (!serverDuration || typeof serverDuration !== 'string') {
-        console.error('Invalid duration format for', filePath, 'duration:', serverDuration, 'at', new Date().toISOString());
-        serverDuration = '00:00'; // Ensure string
+      duration = await getVideoDuration(filePath, file.buffer);
+      if (duration === '00:00') {
+        console.warn(`Failed to extract duration for ${filePath}, using fallback: 00:00`);
       }
     }
 
@@ -220,7 +296,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         fileName: filePath,
         data: file.buffer,
       });
-      fileId = uploadResponse.data.fileId; // Capture fileId for potential cleanup
+      fileId = uploadResponse.data.fileId;
       console.log(`${type} uploaded to Backblaze at`, new Date().toISOString());
     } catch (err) {
       console.error('Backblaze upload failed at', new Date().toISOString(), err.message, err.stack);
@@ -235,6 +311,29 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         });
         console.log(`Stored thumbnail path ${filePath} for course ${courseId} at`, new Date().toISOString());
       } else {
+        // Initialize course and section if they don't exist
+        const courseRef = admin.firestore().collection('courses').doc(courseId);
+        const sectionRef = courseRef.collection('sections').doc(sectionId);
+        
+        const courseDoc = await courseRef.get();
+        if (!courseDoc.exists) {
+          await courseRef.set({
+            totalLength: '00:00',
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          console.log(`Initialized course ${courseId} with totalLength: 00:00`);
+        }
+
+        const sectionDoc = await sectionRef.get();
+        if (!sectionDoc.exists) {
+          await sectionRef.set({
+            totalLength: '00:00',
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          console.log(`Initialized section ${sectionId} with totalLength: 00:00`);
+        }
+
+        // Store content
         const contentData = {
           title: name,
           type,
@@ -242,7 +341,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
           uploader,
           uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
           ...(order !== undefined ? { order: parseInt(order, 10) } : {}),
-          ...(type === 'video' ? { duration: serverDuration } : {}),
+          ...(type === 'video' ? { duration } : {}),
         };
         console.log(`Writing to Firestore: courses/${courseId}/sections/${sectionId}/contents/${contentId} with data:`, JSON.stringify(contentData, null, 2));
         await admin.firestore()
@@ -253,11 +352,27 @@ app.post('/upload', upload.single('file'), async (req, res) => {
           .collection('contents')
           .doc(contentId)
           .set(contentData);
-        console.log(`Stored ${type} path ${filePath} with duration ${serverDuration || 'none'} for course ${courseId}, section ${sectionId}, content ${contentId} at`, new Date().toISOString());
-      }
+
+        // Update totalLength for section and course if video
+        let sectionTotalLength = '00:00';
+        let courseTotalLength = '00:00';
+        if (type === 'video') {
+          sectionTotalLength = await getSectionTotalLength(courseId, sectionId);
+          await sectionRef.update({
+            totalLength: sectionTotalLength,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          console.log(`Updated section ${sectionId} totalLength to ${sectionTotalLength}`);
+
+          courseTotalLength = await getCourseTotalLength(courseId);
+          await courseRef.update({
+            totalLength: courseTotalLength,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          console.log(`Updated course ${courseId} totalLength to ${courseTotalLength}`);
+        }
     } catch (err) {
       console.error('Firestore write error at', new Date().toISOString(), err.message, err.stack);
-      // Clean up Backblaze file on Firestore failure
       if (fileId) {
         try {
           await b2.deleteFileVersion({
@@ -274,7 +389,9 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 
     const responseData = type === 'thumbnail' ? { thumbnailUrl: filePath } : { fileUrl: filePath };
     if (type === 'video') {
-      responseData.duration = serverDuration; // Always include duration for videos
+      responseData.duration = duration;
+      responseData.sectionTotalLength = await getSectionTotalLength(courseId, sectionId);
+      responseData.courseTotalLength = await getCourseTotalLength(courseId);
     }
     console.log('Sending response:', JSON.stringify(responseData));
     res.status(200).json(responseData);
