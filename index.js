@@ -151,7 +151,6 @@ const upload = multer({ storage: storage });
 async function getVideoDuration(filePath, buffer) {
   return new Promise((resolve) => {
     try {
-      // Create a readable stream from buffer
       const stream = Readable.from(buffer);
       ffmpeg(stream)
         .ffprobe((err, metadata) => {
@@ -371,6 +370,16 @@ app.post('/upload', upload.single('file'), async (req, res) => {
           });
           console.log(`Updated course ${courseId} totalLength to ${courseTotalLength}`);
         }
+      }
+
+      const responseData = type === 'thumbnail' ? { thumbnailUrl: filePath } : { fileUrl: filePath };
+      if (type === 'video') {
+        responseData.duration = duration;
+        responseData.sectionTotalLength = sectionTotalLength;
+        responseData.courseTotalLength = courseTotalLength;
+      }
+      console.log('Sending response:', JSON.stringify(responseData));
+      res.status(200).json(responseData);
     } catch (err) {
       console.error('Firestore write error at', new Date().toISOString(), err.message, err.stack);
       if (fileId) {
@@ -386,18 +395,9 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       }
       return res.status(500).json({ error: 'Firestore write failed', details: err.message });
     }
-
-    const responseData = type === 'thumbnail' ? { thumbnailUrl: filePath } : { fileUrl: filePath };
-    if (type === 'video') {
-      responseData.duration = duration;
-      responseData.sectionTotalLength = await getSectionTotalLength(courseId, sectionId);
-      responseData.courseTotalLength = await getCourseTotalLength(courseId);
-    }
-    console.log('Sending response:', JSON.stringify(responseData));
-    res.status(200).json(responseData);
   } catch (err) {
     console.error('Upload error at', new Date().toISOString(), err.message, err.stack);
-    res.status(500).json({ error: 'Upload failed', details: err.message });
+    return res.status(500).json({ error: 'Upload failed', details: err.message });
   }
 });
 
@@ -450,7 +450,7 @@ app.get('/course/:id', async (req, res) => {
     if (!courseDoc.exists) {
       return res.status(404).json({ error: 'Course not found' });
     }
-    const courseData = doc.data();
+    const courseData = courseDoc.data();
     const sectionsSnapshot = await admin.firestore().collection('courses').doc(courseId).collection('sections').get();
     const sections = await Promise.all(
       sectionsSnapshot.docs.map(async (sectionDoc) => {
