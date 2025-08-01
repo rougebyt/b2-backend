@@ -5,6 +5,7 @@
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
     "firebase-admin": "^13.4.0",
+    "fluent-ffmpeg": "^2.1.3",
     "multer": "^2.0.2",
     "uuid": "^11.1.0"
   }
