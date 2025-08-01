@@ -59,41 +59,47 @@ const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
 // Video duration extraction
-async function getVideoDuration(fileBuffer) {
+async function getVideoDuration(fileBuffer, originalName) {
   return new Promise((resolve, reject) => {
-    const tempPath = path.join(os.tmpdir(), `temp-${uuidv4()}.mp4`);
+    const fileExtension = path.extname(originalName).toLowerCase();
+    const tempPath = path.join(os.tmpdir(), `temp-${uuidv4()}${fileExtension}`);
+    console.log(`Writing temp file for duration extraction: ${tempPath} at`, new Date().toISOString());
     fs.writeFile(tempPath, fileBuffer)
       .then(() => {
+        console.log(`Starting ffprobe for ${tempPath} at`, new Date().toISOString());
         ffmpeg.ffprobe(tempPath, (err, metadata) => {
           fs.unlink(tempPath).catch(err => console.error('Failed to delete temp file:', err));
           if (err) {
-            console.error('Error extracting video duration:', err);
-            return reject(err);
+            console.error('Error extracting video duration:', err.message, err.stack);
+            return reject(new Error(`Failed to extract duration: ${err.message}`));
           }
+          console.log(`ffprobe metadata for ${tempPath}:`, JSON.stringify(metadata.format, null, 2));
           const durationSeconds = metadata.format.duration;
           if (!durationSeconds) {
-            return reject(new Error('Could not extract video duration'));
+            console.error('No duration found in metadata for', tempPath, 'at', new Date().toISOString());
+            return reject(new Error('No duration found in video metadata'));
           }
           const duration = Math.floor(durationSeconds);
           const hours = Math.floor(duration / 3600);
           const minutes = Math.floor((duration % 3600) / 60);
           const seconds = duration % 60;
           const formatted = hours > 0
-            ? `${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}`
-            : `${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}`;
+            ? `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+            : `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+          console.log(`Extracted duration: ${formatted} for ${tempPath} at`, new Date().toISOString());
           resolve(formatted);
         });
       })
       .catch(err => {
-        console.error('Error writing temp file for ffprobe:', err);
-        reject(err);
+        console.error('Error writing temp file for ffprobe:', err.message, err.stack);
+        reject(new Error(`Failed to write temp file: ${err.message}`));
       });
   });
 }
 
-// Add String.prototype.padLeft for formatting
-if (!String.prototype.padLeft) {
-  String.prototype.padLeft = function(length, char) {
+// Add String.prototype.padStart for formatting
+if (!String.prototype.padStart) {
+  String.prototype.padStart = function(length, char) {
     return char.repeat(Math.max(0, length - this.length)) + this;
   };
 }
@@ -131,7 +137,7 @@ app.get('/file-url', async (req, res) => {
   }
 });
 
-// Updated upload endpoint with cleanup
+// Updated upload endpoint with mandatory duration extraction
 app.post('/upload', upload.single('file'), async (req, res) => {
   console.log('Received upload request at', new Date().toISOString(), {
     headers: req.headers,
@@ -153,7 +159,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     if (!b2) await initializeB2();
     console.log('Backblaze initialized at', new Date().toISOString());
 
-    const { type, courseId, uploader, name = 'Untitled', sectionId = 'default', contentId, duration: clientDuration } = req.body;
+    const { type, courseId, uploader, name = 'Untitled', sectionId = 'default', contentId, order } = req.body;
     const file = req.file;
 
     if (!type || !courseId || !uploader || !file || (type !== 'thumbnail' && !contentId)) {
@@ -211,13 +217,17 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       }
     }, 200);
 
-    let serverDuration = clientDuration;
-    if (type === 'video' && !clientDuration) {
+    let serverDuration = null;
+    if (type === 'video') {
       try {
-        serverDuration = await getVideoDuration(file.buffer);
-        console.log(`Extracted video duration: ${serverDuration} at`, new Date().toISOString());
+        serverDuration = await getVideoDuration(file.buffer, file.originalname);
+        console.log(`Extracted video duration: ${serverDuration} for ${filePath} at`, new Date().toISOString());
       } catch (err) {
-        console.error('Failed to extract video duration at', new Date().toISOString(), err.message);
+        console.error('Failed to extract video duration for', filePath, 'at', new Date().toISOString(), err.message, err.stack);
+        clearInterval(interval);
+        res.write(JSON.stringify({ progress: 0 }) + '\n');
+        res.status(400).json({ error: 'Failed to extract video duration', details: err.message });
+        return;
       }
     }
 
@@ -227,7 +237,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       console.log('Got upload URL at', new Date().toISOString());
       const uploadResponse = await b2.uploadFile({
         uploadUrl: uploadUrlResponse.data.uploadUrl,
-        uploadAuthToken: uploadUrlResponse.data.authorizationToken,
+        uploadAuthToken: uploadResponse.data.authorizationToken,
         fileName: filePath,
         data: file.buffer,
       });
@@ -261,8 +271,10 @@ app.post('/upload', upload.single('file'), async (req, res) => {
           backblazePath: filePath,
           uploader,
           uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+          ...(order !== undefined ? { order: parseInt(order, 10) } : {}),
           ...(type === 'video' && serverDuration ? { duration: serverDuration } : {}),
         };
+        console.log(`Writing to Firestore: courses/${courseId}/sections/${sectionId}/contents/${contentId} with data:`, JSON.stringify(contentData, null, 2));
         await admin.firestore()
           .collection('courses')
           .doc(courseId)
@@ -271,7 +283,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
           .collection('contents')
           .doc(contentId)
           .set(contentData);
-        console.log(`Stored ${type} path ${filePath} for course ${courseId}, section ${sectionId}, content ${contentId} at`, new Date().toISOString());
+        console.log(`Stored ${type} path ${filePath} with duration ${serverDuration || 'none'} for course ${courseId}, section ${sectionId}, content ${contentId} at`, new Date().toISOString());
       }
     } catch (err) {
       console.error('Firestore write error at', new Date().toISOString(), err.message, err.stack);
@@ -352,7 +364,7 @@ app.get('/course/:id', async (req, res) => {
     if (!courseDoc.exists) {
       return res.status(404).json({ error: 'Course not found' });
     }
-    const courseData = courseDoc.data();
+    const courseData = doc.data();
     const sectionsSnapshot = await admin.firestore().collection('courses').doc(courseId).collection('sections').get();
     const sections = await Promise.all(
       sectionsSnapshot.docs.map(async (sectionDoc) => {
