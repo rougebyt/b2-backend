@@ -131,7 +131,7 @@ app.get('/file-url', async (req, res) => {
   }
 });
 
-// Updated upload endpoint with duration extraction
+// Updated upload endpoint with cleanup
 app.post('/upload', upload.single('file'), async (req, res) => {
   console.log('Received upload request at', new Date().toISOString(), {
     headers: req.headers,
@@ -221,21 +221,28 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       }
     }
 
+    let fileId;
     try {
       const uploadUrlResponse = await b2.getUploadUrl({ bucketId: process.env.BUCKET_ID });
       console.log('Got upload URL at', new Date().toISOString());
-      await b2.uploadFile({
+      const uploadResponse = await b2.uploadFile({
         uploadUrl: uploadUrlResponse.data.uploadUrl,
         uploadAuthToken: uploadUrlResponse.data.authorizationToken,
         fileName: filePath,
         data: file.buffer,
       });
+      fileId = uploadResponse.data.fileId; // Capture fileId for potential cleanup
       console.log(`${type} uploaded to Backblaze at`, new Date().toISOString());
     } catch (err) {
       console.error('Backblaze upload failed at', new Date().toISOString(), err.message, err.stack);
-      throw new Error(`Backblaze upload failed: ${err.message}`);
-    } finally {
       clearInterval(interval);
+      res.write(JSON.stringify({ progress: 0 }) + '\n');
+      res.status(500).json({ error: 'Backblaze upload failed', details: err.message });
+      return;
+    } finally {
+      if (progress < 1.0) {
+        clearInterval(interval);
+      }
     }
 
     res.write(JSON.stringify({ progress: 1.0 }) + '\n');
@@ -268,7 +275,20 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       }
     } catch (err) {
       console.error('Firestore write error at', new Date().toISOString(), err.message, err.stack);
-      throw new Error(`Firestore write failed: ${err.message}`);
+      // Clean up Backblaze file on Firestore failure
+      if (fileId) {
+        try {
+          await b2.deleteFileVersion({
+            fileName: filePath,
+            fileId: fileId,
+          });
+          console.log(`Deleted Backblaze file ${filePath} due to Firestore failure at`, new Date().toISOString());
+        } catch (cleanupErr) {
+          console.error('Failed to delete Backblaze file during cleanup at', new Date().toISOString(), cleanupErr.message, cleanupErr.stack);
+        }
+      }
+      res.status(500).json({ error: 'Firestore write failed', details: err.message });
+      return;
     }
 
     const responseData = type === 'thumbnail' ? { thumbnailUrl: filePath } : { fileUrl: filePath };
