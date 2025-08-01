@@ -108,7 +108,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     if (!b2) await initializeB2();
     console.log('Backblaze initialized at', new Date().toISOString());
 
-    const { type, courseId, uploader, name = 'Untitled', description = 'No description', sectionId = 'default', contentId, duration } = req.body;
+    const { type, courseId, uploader, name = 'Untitled', sectionId = 'default', contentId, duration } = req.body;
     const file = req.file;
 
     if (!type || !courseId || !uploader || !file || (type !== 'thumbnail' && !contentId)) {
@@ -175,7 +175,6 @@ app.post('/upload', upload.single('file'), async (req, res) => {
           title: name,
           type,
           backblazePath: filePath,
-          description,
           uploader,
           uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
           ...(type === 'video' && duration ? { duration } : {}),
