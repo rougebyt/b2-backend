@@ -53,7 +53,7 @@ async function initializeB2() {
 }
 initializeB2().catch(err => console.error('B2 initialization failed:', err));
 
-// Check ffmpeg and ffprobe availability
+// Check ffmpeg availability
 try {
   ffmpeg.getAvailableCodecs((err, codecs) => {
     if (err) {
@@ -62,15 +62,8 @@ try {
       console.log('ffmpeg found:', Object.keys(codecs).length, 'codecs available');
     }
   });
-  ffmpeg.ffprobe((err, metadata) => {
-    if (err) {
-      console.error('ffprobe not found:', err.message);
-    } else {
-      console.log('ffprobe found:', metadata ? 'metadata available' : 'no metadata');
-    }
-  });
 } catch (err) {
-  console.error('Error checking ffmpeg/ffprobe:', err.message);
+  console.error('Error checking ffmpeg:', err.message);
 }
 
 // Helper function to convert mm:ss to seconds
