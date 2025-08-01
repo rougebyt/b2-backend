@@ -71,13 +71,13 @@ async function getVideoDuration(fileBuffer, originalName) {
           fs.unlink(tempPath).catch(err => console.error('Failed to delete temp file:', err));
           if (err) {
             console.error('Error extracting video duration:', err.message, err.stack);
-            return reject(new Error(`Failed to extract duration: ${err.message}`));
+            return resolve('00:00'); // Fallback duration
           }
           console.log(`ffprobe metadata for ${tempPath}:`, JSON.stringify(metadata.format, null, 2));
           const durationSeconds = metadata.format.duration;
-          if (!durationSeconds) {
-            console.error('No duration found in metadata for', tempPath, 'at', new Date().toISOString());
-            return reject(new Error('No duration found in video metadata'));
+          if (!durationSeconds || isNaN(durationSeconds)) {
+            console.error('No valid duration found in metadata for', tempPath, 'at', new Date().toISOString());
+            return resolve('00:00'); // Fallback duration
           }
           const duration = Math.floor(durationSeconds);
           const hours = Math.floor(duration / 3600);
@@ -92,7 +92,7 @@ async function getVideoDuration(fileBuffer, originalName) {
       })
       .catch(err => {
         console.error('Error writing temp file for ffprobe:', err.message, err.stack);
-        reject(new Error(`Failed to write temp file: ${err.message}`));
+        resolve('00:00'); // Fallback duration
       });
   });
 }
@@ -137,7 +137,7 @@ app.get('/file-url', async (req, res) => {
   }
 });
 
-// Updated upload endpoint without chunked responses
+// Updated upload endpoint with fallback duration
 app.post('/upload', upload.single('file'), async (req, res) => {
   console.log('Received upload request at', new Date().toISOString(), {
     headers: req.headers,
@@ -202,12 +202,11 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 
     let serverDuration = null;
     if (type === 'video') {
-      try {
-        serverDuration = await getVideoDuration(file.buffer, file.originalname);
-        console.log(`Extracted video duration: ${serverDuration} for ${filePath} at`, new Date().toISOString());
-      } catch (err) {
-        console.error('Failed to extract video duration for', filePath, 'at', new Date().toISOString(), err.message, err.stack);
-        return res.status(400).json({ error: 'Failed to extract video duration', details: err.message });
+      serverDuration = await getVideoDuration(file.buffer, file.originalname);
+      console.log(`Extracted video duration: ${serverDuration} for ${filePath} at`, new Date().toISOString());
+      if (!serverDuration || typeof serverDuration !== 'string') {
+        console.error('Invalid duration format for', filePath, 'duration:', serverDuration, 'at', new Date().toISOString());
+        serverDuration = '00:00'; // Ensure string
       }
     }
 
@@ -274,8 +273,8 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     }
 
     const responseData = type === 'thumbnail' ? { thumbnailUrl: filePath } : { fileUrl: filePath };
-    if (type === 'video' && serverDuration) {
-      responseData.duration = serverDuration;
+    if (type === 'video') {
+      responseData.duration = serverDuration; // Always include duration for videos
     }
     console.log('Sending response:', JSON.stringify(responseData));
     res.status(200).json(responseData);
@@ -334,7 +333,7 @@ app.get('/course/:id', async (req, res) => {
     if (!courseDoc.exists) {
       return res.status(404).json({ error: 'Course not found' });
     }
-    const courseData = courseDoc.data();
+    const courseData = doc.data();
     const sectionsSnapshot = await admin.firestore().collection('courses').doc(courseId).collection('sections').get();
     const sections = await Promise.all(
       sectionsSnapshot.docs.map(async (sectionDoc) => {
