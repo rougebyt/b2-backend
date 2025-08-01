@@ -137,7 +137,7 @@ app.get('/file-url', async (req, res) => {
   }
 });
 
-// Updated upload endpoint with mandatory duration extraction
+// Updated upload endpoint without chunked responses
 app.post('/upload', upload.single('file'), async (req, res) => {
   console.log('Received upload request at', new Date().toISOString(), {
     headers: req.headers,
@@ -200,23 +200,6 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       filePath = `thumbnails/thumb_${uuid}${fileExtension}`;
     }
 
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Transfer-Encoding', 'chunked');
-    console.log('Starting upload simulation for', type, 'at', new Date().toISOString());
-    res.write(JSON.stringify({ progress: 0 }) + '\n');
-
-    const totalBytes = file.size;
-    const uploadSpeedKBps = 500;
-    const estimatedDurationSeconds = totalBytes / (uploadSpeedKBps * 1024);
-    let progress = 0;
-
-    const interval = setInterval(() => {
-      if (progress < 0.95) {
-        progress += 0.02;
-        res.write(JSON.stringify({ progress }) + '\n');
-      }
-    }, 200);
-
     let serverDuration = null;
     if (type === 'video') {
       try {
@@ -224,10 +207,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         console.log(`Extracted video duration: ${serverDuration} for ${filePath} at`, new Date().toISOString());
       } catch (err) {
         console.error('Failed to extract video duration for', filePath, 'at', new Date().toISOString(), err.message, err.stack);
-        clearInterval(interval);
-        res.write(JSON.stringify({ progress: 0 }) + '\n');
-        res.status(400).json({ error: 'Failed to extract video duration', details: err.message });
-        return;
+        return res.status(400).json({ error: 'Failed to extract video duration', details: err.message });
       }
     }
 
@@ -237,7 +217,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       console.log('Got upload URL at', new Date().toISOString());
       const uploadResponse = await b2.uploadFile({
         uploadUrl: uploadUrlResponse.data.uploadUrl,
-        uploadAuthToken: uploadResponse.data.authorizationToken,
+        uploadAuthToken: uploadUrlResponse.data.authorizationToken,
         fileName: filePath,
         data: file.buffer,
       });
@@ -245,17 +225,8 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       console.log(`${type} uploaded to Backblaze at`, new Date().toISOString());
     } catch (err) {
       console.error('Backblaze upload failed at', new Date().toISOString(), err.message, err.stack);
-      clearInterval(interval);
-      res.write(JSON.stringify({ progress: 0 }) + '\n');
-      res.status(500).json({ error: 'Backblaze upload failed', details: err.message });
-      return;
-    } finally {
-      if (progress < 1.0) {
-        clearInterval(interval);
-      }
+      return res.status(500).json({ error: 'Backblaze upload failed', details: err.message });
     }
-
-    res.write(JSON.stringify({ progress: 1.0 }) + '\n');
 
     try {
       if (type === 'thumbnail') {
@@ -272,7 +243,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
           uploader,
           uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
           ...(order !== undefined ? { order: parseInt(order, 10) } : {}),
-          ...(type === 'video' && serverDuration ? { duration: serverDuration } : {}),
+          ...(type === 'video' ? { duration: serverDuration } : {}),
         };
         console.log(`Writing to Firestore: courses/${courseId}/sections/${sectionId}/contents/${contentId} with data:`, JSON.stringify(contentData, null, 2));
         await admin.firestore()
@@ -299,16 +270,15 @@ app.post('/upload', upload.single('file'), async (req, res) => {
           console.error('Failed to delete Backblaze file during cleanup at', new Date().toISOString(), cleanupErr.message, cleanupErr.stack);
         }
       }
-      res.status(500).json({ error: 'Firestore write failed', details: err.message });
-      return;
+      return res.status(500).json({ error: 'Firestore write failed', details: err.message });
     }
 
     const responseData = type === 'thumbnail' ? { thumbnailUrl: filePath } : { fileUrl: filePath };
     if (type === 'video' && serverDuration) {
       responseData.duration = serverDuration;
     }
-    res.end(JSON.stringify(responseData) + '\n');
-    console.log('Upload completed successfully at', new Date().toISOString(), responseData);
+    console.log('Sending response:', JSON.stringify(responseData));
+    res.status(200).json(responseData);
   } catch (err) {
     console.error('Upload error at', new Date().toISOString(), err.message, err.stack);
     res.status(500).json({ error: 'Upload failed', details: err.message });
@@ -364,7 +334,7 @@ app.get('/course/:id', async (req, res) => {
     if (!courseDoc.exists) {
       return res.status(404).json({ error: 'Course not found' });
     }
-    const courseData = doc.data();
+    const courseData = courseDoc.data();
     const sectionsSnapshot = await admin.firestore().collection('courses').doc(courseId).collection('sections').get();
     const sections = await Promise.all(
       sectionsSnapshot.docs.map(async (sectionDoc) => {
