@@ -92,13 +92,15 @@ function parseDurationToSeconds(duration) {
   }
 }
 
-// Helper function to convert seconds to hh:mm:ss
+// Helper function to convert seconds to mm:ss or hh:mm:ss
 function formatSecondsToDuration(seconds) {
-  if (!seconds || seconds <= 0) return '00:00:00';
+  if (!seconds || seconds <= 0) return '00:00';
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
-  const formatted = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  const formatted = hours > 0
+    ? `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+    : `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   console.log(`Formatting ${seconds}s to ${formatted}`);
   return formatted;
 }
@@ -123,7 +125,7 @@ async function getSectionTotalLength(courseId, sectionId) {
     return formatted;
   } catch (err) {
     console.error(`Error calculating section totalLength for course ${courseId}, section ${sectionId}:`, err.message);
-    return '00:00:00';
+    return '00:00';
   }
 }
 
@@ -146,7 +148,7 @@ async function getCourseTotalLength(courseId) {
     return formatted;
   } catch (err) {
     console.error(`Error calculating course totalLength for course ${courseId}:`, err.message);
-    return '00:00:00';
+    return '00:00';
   }
 }
 
@@ -306,8 +308,8 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     }
 
     try {
-      let sectionTotalLength = '00:00:00';
-      let courseTotalLength = '00:00:00';
+      let sectionTotalLength = '00:00';
+      let courseTotalLength = '00:00';
       if (type === 'thumbnail') {
         await admin.firestore().collection('courses').doc(courseId).update({
           thumbnailUrl: filePath,
@@ -322,20 +324,20 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         const courseDoc = await courseRef.get();
         if (!courseDoc.exists) {
           await courseRef.set({
-            totalLength: '00:00:00',
+            totalLength: '00:00',
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
           });
-          console.log(`Initialized course ${courseId} with totalLength: 00:00:00`);
+          console.log(`Initialized course ${courseId} with totalLength: 00:00`);
         }
 
         const sectionDoc = await sectionRef.get();
         if (!sectionDoc.exists) {
           await sectionRef.set({
-            totalLength: '00:00:00',
+            totalLength: '00:00',
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             order: 0,
           });
-          console.log(`Initialized section ${sectionId} with totalLength: 00:00:00`);
+          console.log(`Initialized section ${sectionId} with totalLength: 00:00`);
         }
 
         // Store content
