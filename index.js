@@ -70,15 +70,26 @@ try {
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// Helper function to parse duration (mm:ss, hh:mm:ss, or Xmin)
+// Helper function to parse duration (mm:ss, hh:mm:ss, Xmin, or invalid formats)
 function parseDurationToSeconds(duration) {
-  if (!duration || duration === '00:00' || duration === '00:00:00') return 0;
+  if (!duration || duration === '00:00' || duration === '00:00:00' || duration === '0min') {
+    console.warn(`Invalid or zero duration: ${duration}, returning 0 seconds`);
+    return 0;
+  }
   try {
     console.log(`Parsing duration: ${duration}`);
-    if (duration.includes('min')) {
-      const minutes = parseInt(duration.replace('min', '')) || 0;
-      console.log(`Parsed as ${minutes} minutes`);
-      return minutes * 60;
+    if (duration.includes('min') || duration.includes('hr')) {
+      const parts = duration.split(' ');
+      let totalSeconds = 0;
+      for (const part of parts) {
+        if (part.includes('hr')) {
+          totalSeconds += (parseInt(part.replace('hr', '')) || 0) * 3600;
+        } else if (part.includes('min')) {
+          totalSeconds += (parseInt(part.replace('min', '')) || 0) * 60;
+        }
+      }
+      console.log(`Parsed as ${totalSeconds} seconds`);
+      return totalSeconds;
     }
     const parts = duration.split(':').map(Number);
     console.log(`Split parts: ${parts}`);
@@ -124,6 +135,10 @@ async function getSectionTotalLength(courseId, sectionId) {
       .get();
     const totalSeconds = contentsSnapshot.docs.reduce((sum, doc) => {
       const duration = doc.data().duration || '00:00';
+      if (!duration.match(/^(?:\d{2}:\d{2}(?::\d{2})?)$/)) {
+        console.warn(`Invalid duration format in content ${doc.id}: ${duration}, treating as 0`);
+        return sum;
+      }
       return sum + parseDurationToSeconds(duration);
     }, 0);
     const formatted = formatSecondsToDuration(totalSeconds);
@@ -146,6 +161,10 @@ async function getCourseTotalLength(courseId) {
     let totalSeconds = 0;
     for (const sectionDoc of sectionsSnapshot.docs) {
       const duration = sectionDoc.data().totalLength || '00:00';
+      if (!duration.match(/^(?:\d{2}:\d{2}(?::\d{2})?)$/)) {
+        console.warn(`Invalid duration format in section ${sectionDoc.id}: ${duration}, treating as 0`);
+        continue;
+      }
       console.log(`Section ${sectionDoc.id} totalLength: ${duration}`);
       totalSeconds += parseDurationToSeconds(duration);
     }
@@ -170,17 +189,24 @@ async function getVideoDuration(filePath, buffer) {
             resolve('00:00');
             return;
           }
-          console.log(`ffprobe metadata for ${filePath}:`, JSON.stringify(metadata, null, 2));
+          console.log(`ffprobe metadata for ${filePath}:`, JSON.stringify({
+            duration: metadata.format?.duration,
+            format: metadata.format?.format_name,
+            size: metadata.format?.size,
+            streams: metadata.streams?.map(s => ({
+              codec_type: s.codec_type,
+              codec_name: s.codec_name,
+              duration: s.duration
+            }))
+          }, null, 2));
           const duration = metadata.format?.duration;
-          if (!duration || isNaN(duration)) {
-            console.error(`Invalid or missing duration in metadata for ${filePath}`);
+          if (!duration || isNaN(duration) || duration < 1) {
+            console.error(`Invalid or too short duration in metadata for ${filePath}: ${duration || 'undefined'}`);
             resolve('00:00');
             return;
           }
           const totalSeconds = Math.round(duration);
-          const minutes = Math.floor(totalSeconds / 60);
-          const seconds = totalSeconds % 60;
-          const formattedDuration = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+          const formattedDuration = formatSecondsToDuration(totalSeconds);
           console.log(`Extracted duration: ${formattedDuration} for ${filePath}`);
           resolve(formattedDuration);
         });
@@ -472,7 +498,7 @@ app.get('/course/:id', async (req, res) => {
     if (!courseDoc.exists) {
       return res.status(404).json({ error: 'Course not found' });
     }
-    const courseData = doc.data();
+    const courseData = courseDoc.data();
     const sectionsSnapshot = await admin.firestore().collection('courses').doc(courseId).collection('sections').get();
     const sections = await Promise.all(
       sectionsSnapshot.docs.map(async (sectionDoc) => {
