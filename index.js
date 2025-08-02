@@ -66,6 +66,10 @@ try {
   console.error('Error checking ffmpeg:', err.message);
 }
 
+// Configure multer for file uploads
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+
 // Helper function to parse duration (mm:ss or hh:mm:ss) to seconds
 function parseDurationToSeconds(duration) {
   if (!duration || duration === '00:00' || duration === '00:00:00') return 0;
@@ -460,7 +464,7 @@ app.get('/course/:id', async (req, res) => {
     if (!courseDoc.exists) {
       return res.status(404).json({ error: 'Course not found' });
     }
-    const courseData = doc.data();
+    const courseData = courseDoc.data();
     const sectionsSnapshot = await admin.firestore().collection('courses').doc(courseId).collection('sections').get();
     const sections = await Promise.all(
       sectionsSnapshot.docs.map(async (sectionDoc) => {
