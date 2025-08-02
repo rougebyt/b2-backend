@@ -66,22 +66,37 @@ try {
   console.error('Error checking ffmpeg:', err.message);
 }
 
-// Helper function to convert mm:ss to seconds
+// Helper function to parse duration (mm:ss or hh:mm:ss) to seconds
 function parseDurationToSeconds(duration) {
-  if (!duration || duration === '00:00') return 0;
-  const [minutes, seconds] = duration.split(':').map(Number);
-  return minutes * 60 + seconds;
+  if (!duration || duration === '00:00' || duration === '00:00:00') return 0;
+  try {
+    console.log(`Parsing duration: ${duration}`);
+    const parts = duration.split(':').map(Number);
+    console.log(`Split parts: ${parts}`);
+    if (parts.length === 2) {
+      // mm:ss
+      return parts[0] * 60 + parts[1];
+    } else if (parts.length === 3) {
+      // hh:mm:ss
+      return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    }
+    console.error(`Invalid duration format: ${duration}`);
+    return 0;
+  } catch (err) {
+    console.error(`Error parsing duration "${duration}": ${err.message}`);
+    return 0;
+  }
 }
 
-// Helper function to convert seconds to mm:ss
+// Helper function to convert seconds to hh:mm:ss
 function formatSecondsToDuration(seconds) {
-  if (!seconds || seconds <= 0) return '00:00';
+  if (!seconds || seconds <= 0) return '00:00:00';
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
-  return hours > 0
-    ? `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
-    : `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  const formatted = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  console.log(`Formatting ${seconds}s to ${formatted}`);
+  return formatted;
 }
 
 // Helper function to get total duration for a section
@@ -99,7 +114,9 @@ async function getSectionTotalLength(courseId, sectionId) {
       const duration = doc.data().duration || '00:00';
       return sum + parseDurationToSeconds(duration);
     }, 0);
-    return formatSecondsToDuration(totalSeconds);
+    const formatted = formatSecondsToDuration(totalSeconds);
+    console.log(`Section ${sectionId} totalLength: ${formatted}`);
+    return formatted;
   } catch (err) {
     console.error(`Error calculating section totalLength for course ${courseId}, section ${sectionId}:`, err.message);
     return '00:00';
@@ -116,29 +133,18 @@ async function getCourseTotalLength(courseId) {
       .get();
     let totalSeconds = 0;
     for (const sectionDoc of sectionsSnapshot.docs) {
-      const contentsSnapshot = await admin.firestore()
-        .collection('courses')
-        .doc(courseId)
-        .collection('sections')
-        .doc(sectionDoc.id)
-        .collection('contents')
-        .where('type', '==', 'video')
-        .get();
-      totalSeconds += contentsSnapshot.docs.reduce((sum, doc) => {
-        const duration = doc.data().duration || '00:00';
-        return sum + parseDurationToSeconds(duration);
-      }, 0);
+      const duration = sectionDoc.data().totalLength || '00:00';
+      console.log(`Section ${sectionDoc.id} totalLength: ${duration}`);
+      totalSeconds += parseDurationToSeconds(duration);
     }
-    return formatSecondsToDuration(totalSeconds);
+    const formatted = formatSecondsToDuration(totalSeconds);
+    console.log(`Course ${courseId} totalLength: ${formatted}`);
+    return formatted;
   } catch (err) {
     console.error(`Error calculating course totalLength for course ${courseId}:`, err.message);
-    return '00:00';
+    return '00:00:00';
   }
 }
-
-// Configure multer for file uploads
-const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
 
 // Function to get video duration
 async function getVideoDuration(filePath, buffer) {
@@ -297,7 +303,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 
     try {
       let sectionTotalLength = '00:00';
-      let courseTotalLength = '00:00';
+      let courseTotalLength = '00:00:00';
       if (type === 'thumbnail') {
         await admin.firestore().collection('courses').doc(courseId).update({
           thumbnailUrl: filePath,
@@ -312,10 +318,10 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         const courseDoc = await courseRef.get();
         if (!courseDoc.exists) {
           await courseRef.set({
-            totalLength: '00:00',
+            totalLength: '00:00:00',
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
           });
-          console.log(`Initialized course ${courseId} with totalLength: 00:00`);
+          console.log(`Initialized course ${courseId} with totalLength: 00:00:00`);
         }
 
         const sectionDoc = await sectionRef.get();
@@ -323,6 +329,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
           await sectionRef.set({
             totalLength: '00:00',
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            order: 0, // Default order
           });
           console.log(`Initialized section ${sectionId} with totalLength: 00:00`);
         }
@@ -350,18 +357,28 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         // Update totalLength for section and course if video
         if (type === 'video') {
           sectionTotalLength = await getSectionTotalLength(courseId, sectionId);
-          await sectionRef.update({
-            totalLength: sectionTotalLength,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-          console.log(`Updated section ${sectionId} totalLength to ${sectionTotalLength}`);
+          try {
+            await sectionRef.update({
+              totalLength: sectionTotalLength,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            console.log(`Updated section ${sectionId} totalLength to ${sectionTotalLength}`);
+          } catch (err) {
+            console.error(`Failed to update section ${sectionId} totalLength: ${err.message}`);
+            throw err; // Propagate to trigger cleanup
+          }
 
           courseTotalLength = await getCourseTotalLength(courseId);
-          await courseRef.update({
-            totalLength: courseTotalLength,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-          console.log(`Updated course ${courseId} totalLength to ${courseTotalLength}`);
+          try {
+            await courseRef.update({
+              totalLength: courseTotalLength,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            console.log(`Updated course ${courseId} totalLength to ${courseTotalLength}`);
+          } catch (err) {
+            console.error(`Failed to update course ${courseId} totalLength to ${courseTotalLength}: ${err.message}`);
+            throw err; // Propagate to trigger cleanup
+          }
         }
       }
 
@@ -443,7 +460,7 @@ app.get('/course/:id', async (req, res) => {
     if (!courseDoc.exists) {
       return res.status(404).json({ error: 'Course not found' });
     }
-    const courseData = courseDoc.data();
+    const courseData = doc.data();
     const sectionsSnapshot = await admin.firestore().collection('courses').doc(courseId).collection('sections').get();
     const sections = await Promise.all(
       sectionsSnapshot.docs.map(async (sectionDoc) => {
