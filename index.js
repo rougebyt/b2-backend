@@ -123,7 +123,7 @@ async function getSectionTotalLength(courseId, sectionId) {
     return formatted;
   } catch (err) {
     console.error(`Error calculating section totalLength for course ${courseId}, section ${sectionId}:`, err.message);
-    return '00:00';
+    return '00:00:00';
   }
 }
 
@@ -306,7 +306,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     }
 
     try {
-      let sectionTotalLength = '00:00';
+      let sectionTotalLength = '00:00:00';
       let courseTotalLength = '00:00:00';
       if (type === 'thumbnail') {
         await admin.firestore().collection('courses').doc(courseId).update({
@@ -331,11 +331,11 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         const sectionDoc = await sectionRef.get();
         if (!sectionDoc.exists) {
           await sectionRef.set({
-            totalLength: '00:00',
+            totalLength: '00:00:00',
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            order: 0, // Default order
+            order: 0,
           });
-          console.log(`Initialized section ${sectionId} with totalLength: 00:00`);
+          console.log(`Initialized section ${sectionId} with totalLength: 00:00:00`);
         }
 
         // Store content
@@ -369,7 +369,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
             console.log(`Updated section ${sectionId} totalLength to ${sectionTotalLength}`);
           } catch (err) {
             console.error(`Failed to update section ${sectionId} totalLength: ${err.message}`);
-            throw err; // Propagate to trigger cleanup
+            throw err;
           }
 
           courseTotalLength = await getCourseTotalLength(courseId);
@@ -381,7 +381,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
             console.log(`Updated course ${courseId} totalLength to ${courseTotalLength}`);
           } catch (err) {
             console.error(`Failed to update course ${courseId} totalLength to ${courseTotalLength}: ${err.message}`);
-            throw err; // Propagate to trigger cleanup
+            throw err;
           }
         }
       }
