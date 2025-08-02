@@ -296,6 +296,8 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     }
 
     try {
+      let sectionTotalLength = '00:00';
+      let courseTotalLength = '00:00';
       if (type === 'thumbnail') {
         await admin.firestore().collection('courses').doc(courseId).update({
           thumbnailUrl: filePath,
@@ -346,8 +348,6 @@ app.post('/upload', upload.single('file'), async (req, res) => {
           .set(contentData);
 
         // Update totalLength for section and course if video
-        let sectionTotalLength = '00:00';
-        let courseTotalLength = '00:00';
         if (type === 'video') {
           sectionTotalLength = await getSectionTotalLength(courseId, sectionId);
           await sectionRef.update({
