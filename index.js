@@ -70,18 +70,21 @@ try {
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// Helper function to parse duration (mm:ss or hh:mm:ss) to seconds
+// Helper function to parse duration (mm:ss, hh:mm:ss, or Xmin)
 function parseDurationToSeconds(duration) {
   if (!duration || duration === '00:00' || duration === '00:00:00') return 0;
   try {
     console.log(`Parsing duration: ${duration}`);
+    if (duration.includes('min')) {
+      const minutes = parseInt(duration.replace('min', '')) || 0;
+      console.log(`Parsed as ${minutes} minutes`);
+      return minutes * 60;
+    }
     const parts = duration.split(':').map(Number);
     console.log(`Split parts: ${parts}`);
     if (parts.length === 2) {
-      // mm:ss
       return parts[0] * 60 + parts[1];
     } else if (parts.length === 3) {
-      // hh:mm:ss
       return parts[0] * 3600 + parts[1] * 60 + parts[2];
     }
     console.error(`Invalid duration format: ${duration}`);
@@ -94,7 +97,10 @@ function parseDurationToSeconds(duration) {
 
 // Helper function to convert seconds to mm:ss or hh:mm:ss
 function formatSecondsToDuration(seconds) {
-  if (!seconds || seconds <= 0) return '00:00';
+  if (!seconds || seconds <= 0) {
+    console.log(`Formatting ${seconds}s to 00:00`);
+    return '00:00';
+  }
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
@@ -466,7 +472,7 @@ app.get('/course/:id', async (req, res) => {
     if (!courseDoc.exists) {
       return res.status(404).json({ error: 'Course not found' });
     }
-    const courseData = courseDoc.data();
+    const courseData = doc.data();
     const sectionsSnapshot = await admin.firestore().collection('courses').doc(courseId).collection('sections').get();
     const sections = await Promise.all(
       sectionsSnapshot.docs.map(async (sectionDoc) => {
